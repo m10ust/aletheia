@@ -1,0 +1,11 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Reports this tool can produce
+*.aletheia.json
+baseline*.json
+
+# Editors / OS
+.DS_Store
+*.swp
