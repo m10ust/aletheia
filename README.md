@@ -8,7 +8,7 @@ Single file. Standard library only. Nothing installed, nothing written, nothing 
 
 ```
 aletheia                    full report
-aletheia --json             machine readable
+aletheia --json             machine readable, also saved to results.json
 aletheia --focus 4242       one process, the whole chain
 aletheia --all              include subjects carrying no signal
 ```
@@ -74,6 +74,11 @@ machine:
   outlived a `pacman -Syu`. That scores 0.10, not 0.45.
 - **`argv[0]` disagreeing with the binary** is only interesting when the caller named a path
   explicitly. `python3` resolving to `python3.13` is how the system works, not a finding.
+- **A world-writable directory that nobody else can reach** is inert, because traversal needs the
+  execute bit on every component of the path. A 777 directory inside a 0700 home cannot be written
+  to by anyone but its owner, so it is reported at weight 0 with that reason attached instead of
+  being scored. Unknown is still not an all-clear: anything short of a chain proven unreachable
+  scores exactly as before.
 
 ## Scoring
 
@@ -84,11 +89,13 @@ it. A number with no receipt is a claim, and this tool is meant to be the receip
 |---|---|
 | +0.45 | running from a deleted file, and no package owns the path |
 | +0.35 | no readable executable is backing the process |
-| +0.30 | no installed package owns the path |
-| +0.25 | the directory holding the binary is world writable |
+| +0.30 | no installed package owns the path, outside your home |
+| +0.25 | the directory holding the binary is world writable, and reachable |
 | +0.20 | `argv[0]` named a different absolute path |
 | +0.15 | setuid or setgid bit set |
 | +0.10 | running from a deleted file that a package still owns |
+| +0.10 | no package owns the path, but the binary is inside your home |
+| +0.10 | the directory is world writable, reachable, and inside your home |
 
 Thresholds: **0.70** high, **0.40** medium. Exit code `1` when anything reaches medium, so it
 drops straight into a script or a timer.
@@ -113,7 +120,7 @@ This is the first slice, and it says what it does not do yet.
 
 **Working:** process inventory, deleted-executable detection, executable provenance against the
 package database, basic ELF classification, per-subject scoring with receipts, human and JSON
-output, `--focus`.
+output, a saved `results.json` on every JSON run, and `--focus`.
 
 **Not built yet:** systemd units and drop-in overrides, transient units, persistence surfaces
 (cron, udev, `ld.so.preload`, kernel modules, eBPF), network attribution, hash comparison

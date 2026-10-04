@@ -5,6 +5,11 @@ __pycache__/
 # Reports this tool can produce
 *.aletheia.json
 baseline*.json
+results.json
+
+# Test and edit residue
+.pytest_cache/
+*.bak-*
 
 # Editors / OS
 .DS_Store

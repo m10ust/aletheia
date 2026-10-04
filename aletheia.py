@@ -369,6 +369,32 @@ def world_writable_dir(path):
     return bool(mode & stat.S_IWOTH)
 
 
+def traversable_by_others(path):
+    """Can another uid actually reach `path`?
+
+    Traversal needs the execute bit for others on EVERY component of the path,
+    not only on the directory named. A 777 directory inside a 0700 home is
+    therefore unreachable: the world-writable bit is real but inert, and
+    scoring it reports a risk that cannot be exercised. That is the ordinary
+    shape in a single-user home, so scoring it leaves every run carrying a
+    finding nobody can act on.
+
+    Returns (True, None) when reachable, (False, component) when blocked there,
+    and (None, component) when a component cannot be stat'd. An unknown answer
+    is never an all-clear.
+    """
+    here = os.sep
+    for part in os.path.abspath(path).split(os.sep)[1:]:
+        here = os.path.join(here, part)
+        try:
+            mode = os.stat(here).st_mode
+        except OSError:
+            return None, here
+        if not mode & stat.S_IXOTH:
+            return False, here
+    return True, None
+
+
 def argv_exe_conflict(argv0, exe_path):
     """True only when argv[0] named a different, real file.
 
@@ -491,10 +517,27 @@ def analyse(processes, ownership, proc_root="/proc"):
                     signals.append((0.0, "owned by %s" % owner, ownership.root))
 
             if world_writable_dir(value):
-                signals.append((W_WORLD_WRITABLE_DIR_HOME if in_home
-                                else W_WORLD_WRITABLE_DIR,
-                                "the directory holding it is world writable",
-                                os.path.dirname(value)))
+                holder = os.path.dirname(value) or "/"
+                reachable, blocker = traversable_by_others(holder)
+                if reachable is False:
+                    # POSITIVELY unreachable: the mode is real but inert, and
+                    # scoring it leaves every run carrying a finding nobody can
+                    # act on. Not scored, but never silent -- a number must
+                    # arrive with its reasons, and this is the reason it does not.
+                    signals.append((0.0,
+                                    "the directory holding it is world writable, "
+                                    "but no other user can traverse the path to it"
+                                    + (" (%s is not other-executable)" % blocker
+                                       if blocker else ""),
+                                    holder))
+                else:
+                    # Reachable, OR UNKNOWN. An unknown answer is never an
+                    # all-clear, so anything short of a proven-inert chain still
+                    # scores. This is the whole point of the None case.
+                    signals.append((W_WORLD_WRITABLE_DIR_HOME if in_home
+                                    else W_WORLD_WRITABLE_DIR,
+                                    "the directory holding it is world writable",
+                                    holder))
             sd = setuid_bits(value)
             if sd:
                 signals.append((W_SETUID,
@@ -642,6 +685,31 @@ def build(args):
     return subjects, stats
 
 
+
+RESULTS_NAME = "results.json"
+
+
+def write_results_json(payload):
+    """Save the JSON report beside this script, atomically.
+
+    Consumers read stdout, so this changes nothing for them and the flag stays
+    backward compatible. It exists because a report with no file is a report
+    you cannot diff against yesterday's. Written to a temp name and renamed, so
+    a reader can never catch a half-written file, and a failure is reported
+    rather than swallowed.
+    """
+    target = os.path.join(os.path.dirname(os.path.abspath(__file__)), RESULTS_NAME)
+    tmp = target + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            fh.write(payload + "\n")
+        os.replace(tmp, target)
+    except OSError as exc:
+        sys.stderr.write("aletheia: could not write %s: %s\n" % (target, exc))
+        return None
+    return target
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="aletheia",
@@ -670,8 +738,13 @@ def main(argv=None):
     subjects, stats = build(args)
 
     if args.json:
-        print(json.dumps({"version": VERSION, "stats": stats,
-                          "subjects": subjects}, indent=2))
+        payload = json.dumps({"version": VERSION, "stats": stats,
+                              "subjects": subjects}, indent=2)
+        print(payload)
+        written = write_results_json(payload)
+        if written:
+            # stderr, never stdout: the JSON on stdout stays machine-parseable.
+            sys.stderr.write("aletheia: wrote %s\n" % written)
     else:
         use_colour = (not args.no_color) and sys.stdout.isatty()
         print(render_human(subjects, stats, use_colour, show_all=args.all))
