@@ -281,6 +281,32 @@ class PacmanOwnership(object):
 # Process collection
 # ---------------------------------------------------------------------------
 
+HOST_ROOT_DEV = os.stat("/").st_dev
+
+
+def foreign_mount_namespace(proc_base, host_dev=None):
+    """True when this process's root is not the host's root.
+
+    Container residents show up in /proc with their own mount namespace, so the
+    exe they report (/opt/omd/versions/.../nagios, /usr/sbin/apache2) does not
+    exist anywhere on the host filesystem. Asking the package manager who owns
+    such a path can only ever answer "nobody", which manufactures a permanent
+    finding that cannot be acted on -- a container image's contents are the
+    image's business, not the host's integrity.
+
+    Returns None when it cannot be determined (an unreadable /proc/<pid>/root
+    for another user's process). An unknown answer is never an all-clear, so
+    the caller keeps scoring those exactly as before.
+    """
+    try:
+        dev = os.stat(os.path.join(proc_base, "root")).st_dev
+    except OSError:
+        return None
+    if host_dev is None:
+        host_dev = HOST_ROOT_DEV
+    return dev != host_dev
+
+
 def collect_processes(proc_root="/proc", hz=None):
     """Every readable process, with the facts this tool cares about."""
     if hz is None:
@@ -354,6 +380,7 @@ def collect_processes(proc_root="/proc", hz=None):
             "argv": argv,
             "argv0": argv[0] if argv else None,
             "started": clock(starttime, hz, btime),
+            "foreign_root": foreign_mount_namespace(base),
             "sources": ["/proc/%d/stat" % pid, "/proc/%d/exe" % pid],
         })
     return processes
@@ -441,6 +468,11 @@ def analyse(processes, ownership, proc_root="/proc"):
     """
     by_exe = {}
     for proc in processes:
+        if proc.get("foreign_root"):
+            # Another mount namespace (a container). Its binaries are not on
+            # this filesystem, so no package can own them and scoring them is
+            # a finding nobody can close. Counted in stats, not scored.
+            continue
         exe = proc["exe"]
         if not exe:
             # An unreadable or fd-backed exe is its own finding, keyed by pid.
@@ -672,6 +704,7 @@ def build(args):
 
     stats = {
         "processes": len(processes),
+        "foreign_processes": len([p for p in processes if p.get("foreign_root")]),
         "executables": len([s for s in subjects if s["kind"] == "exe"]),
         "owned": len([s for s in subjects if s["owner"]]),
         "unowned": len([s for s in subjects if s["kind"] == "exe" and not s["owner"]]),
